@@ -1,55 +1,68 @@
-import cozmo
+#!/usr/bin/env python3
+
+# Copyright (c) 2016 Anki, Inc.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License in the file LICENSE.txt or at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+'''Drive And Turn
+
+Make Cozmo drive forwards and then turn 90 degrees to the left.
+'''
+
 import time
-import pycozmo
-from cozmo.util import degrees
+import cozmo
+from cozmo.util import degrees, distance_mm, speed_mmps
 
-# Establish a connection to Cozmo using the pycozmo library
-with pycozmo.connect() as cli:
-    # Set Cozmo's head angle to 0.7 radians
-    cli.set_head_angle(angle=0.7)
-    
-    # Pause for 1 second to allow Cozmo to adjust its head angle
-    time.sleep(1)
 
-    # Drive Cozmo forward with left and right wheel speeds of 50.0 for a duration of 4 seconds
-    cli.drive_wheels(lwheel_speed=50.0, rwheel_speed=50.0, duration=4.0)
+def cozmo_program(robot: cozmo.robot.Robot):
+    # Drive forwards for 150 millimeters at 50 millimeters-per-second.
+    robot.drive_straight(distance_mm(150), speed_mmps(50)).wait_for_completed()
 
-# Pause to ensure a stable connection with pycozmo before proceeding to the next command
-time.sleep(1)
-
-# Initialize a new pycozmo client
-cli = pycozmo.Client()
-
-# Start the client
-cli.start()
-
-# Connect the client to Cozmo
-cli.connect()
-
-# Wait for the robot to be connected and ready
-cli.wait_for_robot()
-
-# Change direction: make Cozmo turn 90 degrees to the right
-cli.drive_wheels(lwheel_speed=50.0, rwheel_speed=-50.0, duration=2.0)
-
-# Disconnect from Cozmo
-cli.disconnect()
-
-# Stop the client
-cli.stop()
-
-def move_head(robot: cozmo.robot.Robot):
-    # Tilt Cozmo's head 30 degrees downwards
-    robot.move_head(degrees(-30)).wait_for_completed()
-
-    # Pause for 3 seconds
-    time.sleep(3)
-
-    # Change direction: make Cozmo turn 90 degrees to the left
+    # Turn 90 degrees to the left.
+    # Note: To turn to the right, just use a negative number.
     robot.turn_in_place(degrees(90)).wait_for_completed()
 
-    # Move Cozmo forward for 100 millimeters at a speed of 50 millimeters per second for 1 second
-    robot.drive_straight(distance_mm(100), speed_mmps(50)).wait_for_completed()
+    # Tell the head motor to start lowering the head (at 5 radians per second)
+    robot.move_head(-5)
+    # Tell the lift motor to start lowering the lift (at 5 radians per second)
+    robot.move_lift(-5)
+    # Turn 90 degrees to the left.
+    # Note: To turn to the right, just use a negative number.
+    robot.turn_in_place(degrees(45)).wait_for_completed()
 
-# Run the program defined by the move_head function
-cozmo.run_program(move_head)
+    # wait for 1 seconds (the head, lift and wheels will move while we wait)
+    time.sleep(1)
+
+    # Tell the head motor to start raising the head (at 5 radians per second)
+    robot.move_head(5)
+    # Tell the lift motor to start raising the lift (at 5 radians per second)
+    robot.move_lift(5)
+    # Turn 90 degrees to the right.
+    robot.turn_in_place(degrees(-45)).wait_for_completed()
+
+    # wait for 1 seconds (the head, lift and wheels will move while we wait)
+    time.sleep(1)
+
+    # Tell the head motor to start lowering the head (at 5 radians per second)
+    robot.move_head(-5)
+    # Tell the lift motor to start lowering the lift (at 5 radians per second)
+    robot.move_lift(-5)
+    # Turn 90 degrees to the left.
+    # Note: To turn to the right, just use a negative number.
+    robot.turn_in_place(degrees(45)).wait_for_completed()
+
+    # wait for 1 seconds (the head, lift and wheels will move while we wait)
+    time.sleep(1)
+
+
+cozmo.run_program(cozmo_program)
