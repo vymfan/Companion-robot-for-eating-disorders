@@ -23,15 +23,15 @@ Go in the Control Window or Anaconda Prompt on your computer.
 
 1. First you need to clone the github repository with
 
-'''bash
+```
 git clone --recursive https://github.com/luxonis/depthai.git
-'''
+```
 
 Remarq : In case you have already cloned the repository, you can update your submodules with:
 
-'''bash
+```
 git pull --recurse-submodules
-'''
+```
 
 2. There are two installation steps that need to be performed to make sure the demo works:
 
@@ -45,35 +45,35 @@ Right click on Start on computer
 
 Choose Windows PowerShell (Admin) and run the following:
 
-'''bash 
+```
 Set-ExecutionPolicy Bypass -Scope Process -Force; [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072; iex ((New-Object System.Net.WebClient).DownloadString('https://chocolatey.org/install.ps1'))
-'''
+```
 
 Close the PowerShell and then re-open another PowerShell (Admin) by repeating the first two steps.
 
 Install Python and PyCharm
 
-'''bash
+```
 choco install cmake git python pycharm-community -y
-'''
+```
 
 2.2. Python dependencies installation that makes sure your Python interpreter has all required packages installed. This script is safe to be run multiple times and should be ran after every demo update
 
-'''bash 
+``` 
 python install_requirements.py
-'''
+```
 
 - Installing Depthai viewer : 
 
-'''bash
+```
 python -m pip install depthai-viewer
-'''
+```
 
 Launch : 
 
-'''bash 
+``` 
 depthai-viewer
-'''
+```
 
 ## Use OAK-D camera with DepthAi Viewer 
 
@@ -99,16 +99,17 @@ We experiment the detection capabilities by attempting to identify various objec
 
 After running 
 
-'''bash python -m pip install depthai-sdk
-''' 
+``` 
+python -m pip install depthai-sdk
+``` 
 
-download the repositoritories needed on Github, for example, the whole depthai-experiments repo with "git clone". 
+Download the repositoritories needed on Github, for example, the whole depthai-experiments repo with "git clone". 
 
 Then, cd into the needed folder inside the downloaded repo. (exemple : cd C:\Users\fchev\depthai-experiments\gen2-emotion-recognition)
 
 Run 
-'''bash
+```
 python -m pip install -r requirements.txt
-'''
+```
 
-to install the additional required packages before running "main.py".
+To install the additional required packages before running "main.py".

@@ -24,17 +24,17 @@ For Windows :
 
 To install the SDK, type the following into the Command Prompt window:
 
-'''bash 
+```
 pip install --user cozmo[camera]
-'''
+```
 
 The [camera] option adds support for processing images from Cozmo’s camera.
 
 To upgrade the SDK from a previous install, enter this command:
 
-''' bash 
+``` 
 pip3 install --user --upgrade cozmo
-'''
+```
 
 Mobile device setup : 
 
@@ -63,9 +63,9 @@ To run a program, using the same Terminal (macOS/Linux) / Command Prompt (Window
 1. cd into the folder where your code is (careful : for Windows, there must have no '/' but '\')
 
 2. type the following and press Enter : 
-''' bash 
+``` 
 python <your_code>.py
-'''
+```
 
 ## How to connect to COZMO 
 
