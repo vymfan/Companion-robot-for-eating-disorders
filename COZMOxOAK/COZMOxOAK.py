@@ -3,59 +3,49 @@ from depthai_sdk.classes.packets  import TwoStagePacket
 import numpy as np
 import cv2
 import cozmo
-import time
-import pycozmo
-from cozmo.util import degrees
-
-# Establish a connection to Cozmo using the pycozmo library
-with pycozmo.connect() as cli:
-    # Set Cozmo's head angle to 0.7 radians
-    cli.set_head_angle(angle=0.7)
-    
-    # Pause for 1 second to allow Cozmo to adjust its head angle
-    time.sleep(1)
-
-    # Drive Cozmo forward with left and right wheel speeds of 50.0 for a duration of 4 seconds
-    cli.drive_wheels(lwheel_speed=50.0, rwheel_speed=50.0, duration=4.0)
-
-# Pause to ensure a stable connection with pycozmo before proceeding to the next command
-time.sleep(1)
-
-# Initialize a new pycozmo client
-cli = pycozmo.Client()
-
-# Start the client
-cli.start()
-
-# Connect the client to Cozmo
-cli.connect()
-
-# Wait for the robot to be connected and ready
-cli.wait_for_robot()
-
-# Change direction: make Cozmo turn 90 degrees to the right
-cli.drive_wheels(lwheel_speed=50.0, rwheel_speed=-50.0, duration=2.0)
-
-# Disconnect from Cozmo
-cli.disconnect()
-
-# Stop the client
-cli.stop()
-
-def rotate_cozmo(robot: cozmo.robot.Robot):
-    # Tilt Cozmo's head 30 degrees downwards
-    robot.move_head(degrees(-30)).wait_for_completed()
-
-    # Pause for 3 seconds
-    time.sleep(3)
-
-    # Change direction: make Cozmo turn 90 degrees to the left
-    robot.turn_in_place(degrees(90)).wait_for_completed()
-
-    # Move Cozmo forward for 100 millimeters at a speed of 50 millimeters per second for 1 second
-    robot.drive_straight(distance_mm(100), speed_mmps(50)).wait_for_completed()
+from cozmo.util import degrees, distance_mm, speed_mmps
 
 emotions = ['neutral', 'happy', 'sad', 'surprise', 'anger']
+
+def cozmo_program(robot: cozmo.robot.Robot):
+    # Drive forwards for 150 millimeters at 50 millimeters-per-second.
+    robot.drive_straight(distance_mm(150), speed_mmps(50)).wait_for_completed()
+
+    # Turn 90 degrees to the left.
+    # Note: To turn to the right, just use a negative number.
+    robot.turn_in_place(degrees(90)).wait_for_completed()
+
+    # Tell the head motor to start lowering the head (at 5 radians per second)
+    robot.move_head(-5)
+    # Tell the lift motor to start lowering the lift (at 5 radians per second)
+    robot.move_lift(-5)
+    # Turn 90 degrees to the left.
+    # Note: To turn to the right, just use a negative number.
+    robot.turn_in_place(degrees(45)).wait_for_completed()
+
+    # wait for 1 seconds (the head, lift and wheels will move while we wait)
+    time.sleep(1)
+
+    # Tell the head motor to start raising the head (at 5 radians per second)
+    robot.move_head(5)
+    # Tell the lift motor to start raising the lift (at 5 radians per second)
+    robot.move_lift(5)
+    # Turn 90 degrees to the right.
+    robot.turn_in_place(degrees(-45)).wait_for_completed()
+
+    # wait for 1 seconds (the head, lift and wheels will move while we wait)
+    time.sleep(1)
+
+    # Tell the head motor to start lowering the head (at 5 radians per second)
+    robot.move_head(-5)
+    # Tell the lift motor to start lowering the lift (at 5 radians per second)
+    robot.move_lift(-5)
+    # Turn 90 degrees to the left.
+    # Note: To turn to the right, just use a negative number.
+    robot.turn_in_place(degrees(45)).wait_for_completed()
+
+    # wait for 1 seconds (the head, lift and wheels will move while we wait)
+    time.sleep(1)
 
 with OakCamera() as oak:
     color = oak.create_camera('color')
@@ -73,16 +63,12 @@ with OakCamera() as oak:
             emotion_results = np.array(rec.getFirstLayerFp16())
             emotion_name = emotions[np.argmax(emotion_results)]
 
-            # Afficher le texte dans la sortie de VSCode
-            print(f"Émotion détectée : {emotion_name}")
+            if emotion_name == 'surprise':
+                cozmo.run_program(cozmo_program)
 
             vis.add_text(emotion_name,
                             bbox=(*det.top_left, *det.bottom_right),
                             position=TextPosition.BOTTOM_RIGHT)
-            
-            if emotion_name == 'sad':
-                # Run the program defined by the rotate_cozmo function
-                cozmo.run_program(rotate_cozmo)
 
         vis.draw(packet.frame)
         cv2.imshow(packet.name, packet.frame)
