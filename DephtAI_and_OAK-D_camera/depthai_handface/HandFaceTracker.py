@@ -1,88 +1,106 @@
 import numpy as np
 from collections import namedtuple
-import mediapipe_utils as mpu  # Import a custom module 'mediapipe_utils' and alias it as 'mpu'
 
-import depthai as dai  # Import the 'depthai' library for working with the DepthAI hardware
-import cv2  # Import the OpenCV library for computer vision
-from pathlib import Path  # Import the 'Path' class from the 'pathlib' module for working with file paths
-from FPS import FPS, now  # Import custom modules for frame rate measurement
+from numpy.lib.arraysetops import isin
+import mediapipe_utils as mpu
+import depthai as dai
+import cv2
+from pathlib import Path
+from FPS import FPS, now
+import time
+import sys
+from string import Template
+import marshal
+from HostSpatialCalc import HostSpatialCalc
+from face_geometry import ( 
+                PCF,
+                get_metric_landmarks,
+                procrustes_landmark_basis,
+                canonical_metric_landmarks
+            )
 
-import time  # Import the 'time' module for working with time-related functions
-import sys  # Import the 'sys' module for interacting with the Python interpreter
-from string import Template  # Import the 'Template' class from the 'string' module for string templating
-import marshal  # Import the 'marshal' module for object serialization
 
-from HostSpatialCalc import HostSpatialCalc  # Import a custom module 'HostSpatialCalc'
-from face_geometry import (  # Import specific functions/classes from the 'face_geometry' module
-    PCF,
-    get_metric_landmarks,
-    procrustes_landmark_basis,
-    canonical_metric_landmarks
-)
-from scipy.spatial import distance as dist  # Import the 'distance' function from the 'scipy.spatial' module
-
-# Define the path to the directory of the current script
+# Get the directory of the current script file
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-# Define paths to various model files using 'SCRIPT_DIR'
+# Define the file path for the palm detection model
 PALM_DETECTION_MODEL = str(SCRIPT_DIR / "models/palm_detection_pp_top2_th50_sh4.blob")
+
+# Define the file path for the hand landmark model
 HAND_LANDMARK_MODEL = str(SCRIPT_DIR / "models/hand_landmark_lite_sh4.blob")
+
+# Define the file paths for the hand template manager scripts
 HAND_TEMPLATE_MANAGER_SCRIPT_SOLO = str(SCRIPT_DIR / "hand_template_manager_script_solo.py")
 HAND_TEMPLATE_MANAGER_SCRIPT_DUO = str(SCRIPT_DIR / "hand_template_manager_script_duo.py")
+
+# Define the file path for the face detection model
 FACE_DETECTION_MODEL = str(SCRIPT_DIR / "models/face_detection_short_range_pp_top1_th50_sh1.blob")
+
+# Define the file path for the face landmark model
 FACE_LANDMARK_MODEL = str(SCRIPT_DIR / "models/face_landmark_pp_sh4.blob")
+
+# Define the file path for the face landmark model with attention
 FACE_LANDMARK_WITH_ATTENTION_MODEL = str(SCRIPT_DIR / "models/face_landmark_with_attention_pp_sh4.blob")
+
+# Define the file path for the face template manager script
 FACE_TEMPLATE_MANAGER_SCRIPT = str(SCRIPT_DIR / "face_template_manager_script.py")
 
+
+
+# The DepthSync class
 class DepthSync:
     """
-    Class to manage synchronization of depth frames with RGB frames.
-    Stores history of depth frames to ensure alignment with RGB frames.
+    Store depth frames history (if 'xyz' is True) to assure that alignment of rgb frame and depth frame is 
+    made on synchronized frames
     """
+    # The constructor initializes an empty list to store messages (frames)
     def __init__(self):
-        # Initialize an empty list to store depth frames
         self.msg_lst = []
 
+    # The add method adds a new message (or list of messages) to the list
     def add(self, msg):
-        """
-        Add a message or a list of messages to the history list.
-        """
-        # Check if 'msg' is a list, and if so, append each element to the history list
         if isinstance(msg, list):
             for m in msg:
                 self.msg_lst.append(m)
         else:
-            # If 'msg' is not a list, append it as a single element to the history list
             self.msg_lst.append(msg)
 
+    # The get method finds and returns the message that has the closest timestamp to the input message
     def get(self, msg):
         """
-        Return the message from the list with the closest timestamp to 'msg' timestamp,
-        and remove older messages from the list.
+        Return message from the list that have the closest timestamp to 'msg' timestamp
+        and clean the list from old messages
         """
-        # Check if the history list is empty, and if so, return None
+        # If the list is empty, return None
         if len(self.msg_lst) == 0:
             return None
-        # Get the timestamp of the input message 'msg'
+
+        # Get the timestamp of the input message
         ts = msg.getTimestamp()
-        # Calculate the time difference between 'msg' and the first message in the history list
+
+        # Initialize the minimum difference in timestamps and the id of the closest message
         delta_min = abs(ts - self.msg_lst[0].getTimestamp())
         msg_id = 0
-        # Iterate through the remaining messages in the history list
+
+        # Loop through the rest of the messages in the list
         for i in range(1, len(self.msg_lst)):
-            # Calculate the time difference between 'msg' and the current message
-            delta = abs(ts - self.msg_lst[i].getTimestamp())
-            # Check if the current message has a closer timestamp to 'msg' than the previous minimum
+            # Calculate the difference in timestamps
+            delta =  abs(ts - self.msg_lst[i].getTimestamp())
+
+            # If this difference is smaller than the current minimum, update the minimum and the id
             if delta < delta_min:
                 delta_min = delta
                 msg_id = i
             else:
                 break
-        # Retrieve the message with the closest timestamp from the history list
+
+        # Get the message with the closest timestamp
         msg = self.msg_lst[msg_id]
-        # Remove older messages from the history list
-        del self.msg_lst[:msg_id + 1]
-        # Return the retrieved message
+
+        # Remove this message and all older messages from the list
+        del self.msg_lst[:msg_id+1]
+
+        # Return the message with the closest timestamp
         return msg
 
 
@@ -90,35 +108,36 @@ class HandFaceTracker:
     """
     Mediapipe Hand and Face Tracker for depthai (= Mediapipe Hand tracker + Mediapipe Facemesh)
     Arguments:
-    - input_src: frame source,
+    - input_src: frame source, 
             - "rgb" or None: OAK* internal color camera,
             - a file path of an image or a video,
-            - an integer (e.g., 0) for a webcam id,
-    - nb_hands: 0, 1, or 2. Number of hands max tracked. If 0, then hand tracking is not used. 1 is faster than 2.
+            - an integer (eg 0) for a webcam id,
+    - nb_hands: 0, 1 or 2. Number of hands max tracked. If 0, then hand tracking is not used. 1 is faster than 2.
     - use_face_pose: boolean. If yes, compute the face pose transformation matrix and the metric landmarks.
-            The face pose transformation matrix provides mapping from the static canonical face model to the runtime face.
+            The face pose tranformation matrix provides mapping from the static canonical face model to the runtime face.
             The metric landmarks are the 3D runtime metric landmarks aligned with the canonical metric face landmarks (unit: cm).
-    - xyz: boolean, when True calculate the (x, y, z) coords of face (measure on the forehead) and hands.
-    - crop: boolean which indicates if square cropping on source images is applied or not
-    - internal_fps: when using the internal color camera as input source, set its FPS to this value (calling setFps()).
-    - resolution: sensor resolution "full" (1920x1080) or "ultra" (3840x2160),
-    - internal_frame_height: when using the internal color camera, set the frame height (calling setIspScale()).
-            The width is calculated accordingly to height and depends on the value of 'crop'
-    - use_gesture: boolean, when True, recognize hand poses from a predefined set of poses
+    - xyz : boolean, when True calculate the (x, y, z) coords of face (measure on the forehead) and hands.
+    - crop : boolean which indicates if square cropping on source images is applied or not
+    - internal_fps : when using the internal color camera as input source, set its FPS to this value (calling setFps()).
+    - resolution : sensor resolution "full" (1920x1080) or "ultra" (3840x2160),
+    - internal_frame_height : when using the internal color camera, set the frame height (calling setIspScale()).
+            The width is calculated accordingly to height and depends on value of 'crop'
+    - use_gesture : boolean, when True, recognize hand poses froma predefined set of poses
                     (ONE, TWO, THREE, FOUR, FIVE, OK, PEACE, FIST)
-    - single_hand_tolerance_thresh (when nb_hands=2 only): if there is only one hand in a frame,
-            in order to know when a second hand will appear you need to run the palm detection
-            in the following frames. Because palm detection is slow, you may want to delay
-            the next time you will run it. 'single_hand_tolerance_thresh' is the number of
-            frames during only one hand is detected before palm detection is run again.
-    - focus: None or int between 0 and 255. Color camera focus.
-            If None, auto-focus is active. Otherwise, the focus is set to 'focus'
-    - trace: int, 0 = no trace, otherwise print some debug messages or show the output of ImageManip nodes
-            if trace & 1, print application-level info like the number of palm detections,
-            if trace & 2, print lower-level info like when a message is sent or received by the manager script node,
+    - single_hand_tolerance_thresh (when nb_hands=2 only) : if there is only one hand in a frame, 
+            in order to know when a second hand will appear you need to run the palm detection 
+            in the following frames. Because palm detection is slow, you may want to delay 
+            the next time you will run it. 'single_hand_tolerance_thresh' is the number of 
+            frames during only one hand is detected before palm detection is run again.  
+    - focus: None or int between 0 and 255. Color camera focus. 
+            If None, auto-focus is active. Otherwise, the focus is set to 'focus' 
+    - trace : int, 0 = no trace, otherwise print some debug messages or show output of ImageManip nodes
+            if trace & 1, print application level info like number of palm detections,
+            if trace & 2, print lower level info like when a message is sent or received by the manager script node,
             if trace & 4, show in cv2 windows outputs of ImageManip node,
-            if trace & 8, save in the file tmp_code.py the python code of the manager script node
-            Ex: if trace == 3, both application and low-level info are displayed.
+            if trace & 8, save in file tmp_code.py the python code of the manager script node
+            Ex: if trace==3, both application and low level info are displayed.
+                      
     """
     def __init__(self, input_src=None,
                 with_attention=True,
@@ -137,52 +156,49 @@ class HandFaceTracker:
                 trace=0
                 ):
 
-        self.pd_model = PALM_DETECTION_MODEL  # Set the palm detection model path
+        self.pd_model = PALM_DETECTION_MODEL
         print(f"Palm detection blob     : {self.pd_model}")
 
-        self.hlm_model = HAND_LANDMARK_MODEL  # Set the hand landmark model path
-        self.hlm_score_thresh = hlm_score_thresh  # Set the hand landmark score threshold
+        self.hlm_model = HAND_LANDMARK_MODEL
+        self.hlm_score_thresh = hlm_score_thresh
         print(f"Landmark blob           : {self.hlm_model}")
 
-        self.fd_model = FACE_DETECTION_MODEL  # Set the face detection model path
+        self.fd_model = FACE_DETECTION_MODEL
         print(f"Face detection blob     : {self.fd_model}")
 
-        self.with_attention = with_attention  # Set whether to use face landmark with attention
+        self.with_attention = with_attention # Use of attention mechanism for face landmark detection
         if self.with_attention:
             self.flm_model = FACE_LANDMARK_WITH_ATTENTION_MODEL
         else:
             self.flm_model = FACE_LANDMARK_MODEL
-        self.flm_score_thresh = 0.5  # Set the face landmark score threshold
+        self.flm_score_thresh = 0.5
         print(f"Face landmark blob      : {self.flm_model}")
 
-        self.nb_hands = nb_hands  # Set the maximum number of hands to track
-
-        self.xyz = False  # Set whether to calculate (x, y, z) coordinates of face and hands
-        self.crop = crop  # Set whether square cropping on source images is applied
-        self.use_world_landmarks = True  # Set whether to use world landmarks
-
+        self.nb_hands = nb_hands # Number of hands to track
+        
+        self.xyz = False
+        self.crop = crop  # Application of square cropping on source images
+        self.use_world_landmarks = True
         if focus is None:
-            self.focus = None  # Set color camera focus to None (auto-focus)
+            self.focus = None
         else:
-            self.focus = max(min(255, int(focus)), 0)  # Set color camera focus within valid range
-
-        self.trace = trace  # Set the trace level for debugging
-        self.use_gesture = use_gesture  # Set whether to recognize hand poses from predefined set of poses
-        self.single_hand_tolerance_thresh = single_hand_tolerance_thresh  # Set tolerance for single hand detection delay
-        self.double_face = double_face  # Set whether to enable experimental feature for improving FPS
-
+            self.focus = max(min(255, int(focus)), 0)
+           
+        self.trace = trace # Trace level for debugging
+        self.use_gesture = use_gesture # Recognition of hand poses from a predefined set of poses
+        self.single_hand_tolerance_thresh = single_hand_tolerance_thresh
+        self.double_face = double_face
         if self.double_face:
             print("This is an experimental feature that should help to improve the FPS")
             if self.nb_hands > 0:
                 print("With double_face flag, the hand tracking is disabled !")
-                self.nb_hands = 0  # Disable hand tracking when double_face flag is enabled
+                self.nb_hands = 0
 
-        self.device = dai.Device()  # Initialize the DepthAI device
-        
+        self.device = dai.Device()
+
+        # Configuration of input source
         if input_src == None or input_src == "rgb":
-            # OAK* internal color camera configuration
-            self.input_type = "rgb" # Set the input type to "rgb"
-            # Determine sensor resolution based on the provided 'resolution' parameter
+            self.input_type = "rgb" # OAK* internal color camera
             if resolution == "full":
                 self.resolution = (1920, 1080)
             elif resolution == "ultra":
@@ -193,22 +209,20 @@ class HandFaceTracker:
             print("Sensor resolution:", self.resolution)
 
             if xyz:
-                # Check if 'xyz' is True and the device supports stereo
+                # Check if the device supports stereo -> # Checking the availability of depth on the device
                 cameras = self.device.getConnectedCameras()
-                if dai.CameraBoardSocket.LEFT in cameras and dai.CameraBoardSocket.RIGHT in cameras: 
-                    self.xyz = True # Stereo is supported, so set 'xyz' to True
+                if dai.CameraBoardSocket.LEFT in cameras and dai.CameraBoardSocket.RIGHT in cameras:
+                    self.xyz = True
                 else:
                     print("Warning: depth unavailable on this device, 'xyz' argument is ignored")
 
-            # Set default internal FPS if 'internal_fps' is not provided
+            # Configuration of the frame rate of the internal color camera
             if internal_fps is None:
                 if self.double_face:
-                    # If 'double_face' is True, set internal FPS based on 'with_attention'
                     if self.with_attention:
                         self.internal_fps = 14
                     else:
                         self.internal_fps = 41
-                # If 'double_face' is False, set internal FPS based on 'with_attention' and 'nb_hands'
                 else:
                     if self.with_attention:
                         self.internal_fps = 11
@@ -221,12 +235,10 @@ class HandFaceTracker:
                             self.internal_fps = 19
 
 
-            # If 'internal_fps' is provided, use the specified value
             else:
                 self.internal_fps = internal_fps 
             
             
-                # Additional adjustment for internal FPS when using OAK* internal color camera
                 if self.input_type == "rgb" and internal_fps is None:
                     if self.with_attention:
                         self.internal_fps = 14
@@ -238,15 +250,13 @@ class HandFaceTracker:
 
             self.video_fps = self.internal_fps # Used when saving the output in a video file. Should be close to the real fps
 
-            # Check if cropping is enabled
+            # Configure the image size and cropping parameters based on whether cropping is enabled
             if self.crop:
-                # Calculate ISP scale parameters and set image size and padding for cropping
                 self.frame_size, self.scale_nd = mpu.find_isp_scale_params(internal_frame_height, self.resolution)
                 self.img_h = self.img_w = self.frame_size
                 self.pad_w = self.pad_h = 0
                 self.crop_w = (int(round(self.resolution[0] * self.scale_nd[0] / self.scale_nd[1])) - self.img_w) // 2
             else:
-                # Calculate ISP scale parameters and set image size, padding, and cropping width for non-cropped case
                 width, self.scale_nd = mpu.find_isp_scale_params(internal_frame_height * self.resolution[0] / self.resolution[1], self.resolution, is_height=False)
                 self.img_h = int(round(self.resolution[1] * self.scale_nd[0] / self.scale_nd[1]))
                 self.img_w = int(round(self.resolution[0] * self.scale_nd[0] / self.scale_nd[1]))
@@ -255,36 +265,28 @@ class HandFaceTracker:
                 self.frame_size = self.img_w
                 self.crop_w = 0
         
-            # Print information about the internal camera image size and padding
             print(f"Internal camera image size: {self.img_w} x {self.img_h} - pad_h: {self.pad_h}")
 
-        # Check if the input source is an image file (ends with '.jpg' or '.png')
+        # Handle different types of input sources
         elif input_src.endswith('.jpg') or input_src.endswith('.png') :
             self.input_type= "image"
-            # Read the image file and set image dimensions
             self.img = cv2.imread(input_src)
             self.video_fps = 25
             self.img_h, self.img_w = self.img.shape[:2]
-        
         else:
-            # Check if the input source is a video file
             self.input_type = "video"
-            # Convert input source to integer if it represents a webcam ID
             if input_src.isdigit():
                 input_src = int(input_src)
-            # Open the video capture object and retrieve video properties
             self.cap = cv2.VideoCapture(input_src)
             self.video_fps = int(self.cap.get(cv2.CAP_PROP_FPS))
             self.img_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
             self.img_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
             print("Video FPS:", self.video_fps)
         
-        # If the input type is not "rgb," configure dimensions and cropping for non-rgb input
+        # If the input source is not the RGB camera, disable the XYZ coordinate calculation
         if self.input_type != "rgb":
             self.xyz = False
             print(f"Original frame size: {self.img_w}x{self.img_h}")
-
-            # Calculate frame size and cropping/padding dimensions based on cropping configuration
             if self.crop:
                 self.frame_size = min(self.img_w, self.img_h)
             else:
@@ -299,53 +301,43 @@ class HandFaceTracker:
             self.pad_h = max((self.frame_size - self.img_h) // 2, 0)
             if self.pad_h: print("Padding on height :", self.pad_h)
                      
-            # Adjust image dimensions for cropping configuration
             if self.crop: self.img_h = self.img_w = self.frame_size
             print(f"Frame working size: {self.img_w}x{self.img_h}")
 
         # Define and start pipeline
         usb_speed = self.device.getUsbSpeed()
-        self.device.startPipeline(self.create_pipeline())
+        self.device.startPipeline(self.create_pipeline())  # Start the pipeline with the pipeline created by the create_pipeline() method
         print(f"Pipeline started - USB speed: {str(usb_speed).split('.')[-1]}")
 
-        # Define data queues based on the input type and number of hands
+        # Define data queues 
         if self.input_type == "rgb":
-            # For RGB input, get the video output queue
-            self.q_video = self.device.getOutputQueue(name="cam_out", maxSize=2, blocking=True)
+            self.q_video = self.device.getOutputQueue(name="cam_out", maxSize=2, blocking=True) # If the input type is RGB, get the output queue for the video
         else:
-            # For non-RGB input, get the face manager input queue
-            self.q_face_manager_in = self.device.getInputQueue(name="face_manager_in")
+            self.q_face_manager_in = self.device.getInputQueue(name="face_manager_in") # Otherwise, get the input queue for the face manager
         if self.nb_hands > 0:
-            # If hand tracking is enabled, get the hand manager output queue
-            self.q_hand_manager_out = self.device.getOutputQueue(name="hand_manager_out", maxSize=2, blocking=True)
-        # Get queues for face and hand managers, and face landmark neural network
-        self.q_face_manager_out = self.device.getOutputQueue(name="face_manager_out", maxSize=2, blocking=True)
-        self.q_flm_nn_out = self.device.getOutputQueue(name="flm_nn_out", maxSize=2, blocking=True)
-        # For debugging, get queues for ImageManip node outputs
+            self.q_hand_manager_out = self.device.getOutputQueue(name="hand_manager_out", maxSize=2, blocking=True) # If there are hands detected, get the output queue for the hand manager
+        self.q_face_manager_out = self.device.getOutputQueue(name="face_manager_out", maxSize=2, blocking=True) # Get the output queue for the face manager
+        self.q_flm_nn_out = self.device.getOutputQueue(name="flm_nn_out", maxSize=2, blocking=True) # Get the output queue for the facial landmarks neural network
+        # For showing outputs of ImageManip nodes (debugging)
         if self.trace & 4:
             if self.nb_hands > 0:
                 self.q_pre_pd_manip_out = self.device.getOutputQueue(name="pre_pd_manip_out", maxSize=1, blocking=False)
                 self.q_pre_hlm_manip_out = self.device.getOutputQueue(name="pre_hlm_manip_out", maxSize=1, blocking=False)    
             self.q_pre_fd_manip_out = self.device.getOutputQueue(name="pre_fd_manip_out", maxSize=1, blocking=False)
             self.q_pre_flm_manip_out = self.device.getOutputQueue(name="pre_flm_manip_out", maxSize=1, blocking=False)    
-        # If depth calculation (xyz) is enabled, get queues for depth, initialize DepthSync, and create HostSpatialCalc
         if self.xyz:
-            self.q_depth_out = self.device.getOutputQueue(name="depth_out", maxSize=5, blocking=True)
-            self.depth_sync = DepthSync()
-            self.spatial_calc = HostSpatialCalc(self.device, delta=int(self.img_w/100), thresh_high=3000)
+            self.q_depth_out = self.device.getOutputQueue(name="depth_out", maxSize=5, blocking=True) # If XYZ coordinates are enabled, get the output queue for the depth map
+            self.depth_sync = DepthSync() # Initialize the depth synchronization
+            self.spatial_calc = HostSpatialCalc(self.device, delta=int(self.img_w/100), thresh_high=3000) # Initialize the spatial calculator with the device, delta, and high threshold parameters
        
-        # Initialize FPS and sequence number
-        self.fps = FPS()
-        self.seq_num = 0
+        self.fps = FPS() # Initialize the frames per second counter
+        self.seq_num = 0 # Initialize the sequence number
 
-        # Check if face pose computation is enabled
         self.use_face_pose = use_face_pose
         if self.use_face_pose:
-            # Read calibration data and get RGB camera intrinsics and distortion coefficients
             calib_data = self.device.readCalibration()
-            self.rgb_matrix= np.array(calib_data.getCameraIntrinsics(dai.CameraBoardSocket.RGB, resizeWidth=self.img_w, resizeHeight=self.img_h))
-            self.rgb_dist_coef = np.array(calib_data.getDistortionCoefficients(dai.CameraBoardSocket.RGB))
-            # Create a PCF (Perspective Camera Frustum) object for face pose computation
+            self.rgb_matrix= np.array(calib_data.getCameraIntrinsics(dai.CameraBoardSocket.RGB, resizeWidth=self.img_w, resizeHeight=self.img_h)) # Get the camera intrinsics for the RGB camera and resize them to the image width and height
+            self.rgb_dist_coef = np.array(calib_data.getDistortionCoefficients(dai.CameraBoardSocket.RGB)) # Get the distortion coefficients for the RGB camera
             self.pcf = PCF(
                 near=1,
                 far=10000,
@@ -363,7 +355,7 @@ class HandFaceTracker:
         self.pd_input_length = 128
 
         if self.input_type == "rgb":
-            # Create ColorCamera node for RGB input
+            # ColorCamera
             print("Creating Color Camera")
             # _pgraph_ name 
             cam = pipeline.createColorCamera()
@@ -385,11 +377,9 @@ class HandFaceTracker:
                 cam.setVideoSize(self.img_w, self.img_h)
                 cam.setPreviewSize(self.img_w, self.img_h)
 
-        # Create face manager script node
         face_manager_script = pipeline.create(dai.node.Script)
         face_manager_script.setScript(self.build_face_manager_script())
         face_manager_script.setProcessor(dai.ProcessorType.LEON_CSS)
-        # Connect ColorCamera or XLinkIn to face manager script based on input type
         if self.input_type == "rgb":
             cam.preview.link(face_manager_script.inputs["cam_in"])
             face_manager_script.inputs["cam_in"].setQueueSize(1)
@@ -400,7 +390,6 @@ class HandFaceTracker:
             host_to_face_manager_in.out.link(face_manager_script.inputs["cam_in"])
             
 
-        # Connect ColorCamera output to XLinkOut for RGB input
         if self.input_type == "rgb":
             cam_out = pipeline.createXLinkOut()
             cam_out.setStreamName("cam_out")
@@ -470,7 +459,7 @@ class HandFaceTracker:
             pre_hlm_manip.out.link(hlm_nn.input)
             hlm_nn.out.link(hand_manager_script.inputs['from_lm_nn'])
 
-        # Define face detection pre-processing image manip
+        ### Face
         self.fd_input_length = 128
 
         print("Creating Face Detection pre processing image manip")
@@ -531,7 +520,6 @@ class HandFaceTracker:
         flm_nn.out.link(flm_nn_out.input)
 
         if self.double_face:
-            # Create second set of face landmarks for double-face
             print("Creating Face Landmark pre processing image manip 2") 
             pre_flm_manip2 = pipeline.create(dai.node.ImageManip)
             pre_flm_manip2.setMaxOutputFrameSize(self.flm_input_length*self.flm_input_length*3)
@@ -553,7 +541,6 @@ class HandFaceTracker:
 
 
         if self.xyz:
-            # Create MonoCameras, Stereo, and SpatialLocationCalculator nodes for depth calculation
             print("Creating MonoCameras, Stereo and SpatialLocationCalculator nodes")
             # For now, RGB needs fixed focus to properly align with depth.
             # The value used during calibration should be used here
@@ -643,18 +630,18 @@ class HandFaceTracker:
         
         # Perform the substitution
         code = template.substitute(
-                    _TRACE1 = "node.warn" if self.trace & 1 else "#", # Display a warning if trace is enabled
-                    _TRACE2 = "node.warn" if self.trace & 2 else "#", # Display a warning if trace is enabled
-                    _with_attention = self.with_attention, 
-                    _lm_score_thresh = self.flm_score_thresh, # Score threshold for hand landmarks
-                    _pad_h = self.pad_h, # Padding height
-                    _img_h = self.img_h, # Image height
-                    _img_w = self.img_w, # Image width
-                    _frame_size = self.frame_size, # Frame size
-                    _crop_w = self.crop_w, # Cropping width
-                    _IF_SEND_RGB_TO_HOST = "" if self.input_type == "rgb" else '"""', # Send RGB to host, Use handedness average
-                    _track_hands = self.nb_hands > 0, # Tolerance threshold for single hand detection
-                    _double_face = self.double_face # Use world coordinates for landmarks
+                    _TRACE1 = "node.warn" if self.trace & 1 else "#",
+                    _TRACE2 = "node.warn" if self.trace & 2 else "#",
+                    _with_attention = self.with_attention,
+                    _lm_score_thresh = self.flm_score_thresh,
+                    _pad_h = self.pad_h,
+                    _img_h = self.img_h,
+                    _img_w = self.img_w,
+                    _frame_size = self.frame_size,
+                    _crop_w = self.crop_w,
+                    _IF_SEND_RGB_TO_HOST = "" if self.input_type == "rgb" else '"""',
+                    _track_hands = self.nb_hands > 0,
+                    _double_face = self.double_face
         )
         # Remove comments and empty lines
         import re
@@ -669,23 +656,19 @@ class HandFaceTracker:
         return code
 
     def extract_hand_data(self, res, hand_idx):
-        # Create an instance of the HandRegion class from the mpu module
         hand = mpu.HandRegion()
-        # Extracting rectangular region information
         hand.rect_x_center_a = res["rect_center_x"][hand_idx] * self.frame_size
         hand.rect_y_center_a = res["rect_center_y"][hand_idx] * self.frame_size
         hand.rect_w_a = hand.rect_h_a = res["rect_size"][hand_idx] * self.frame_size
         hand.rotation = res["rotation"][hand_idx] 
         hand.rect_points = mpu.rotated_rect_to_points(hand.rect_x_center_a, hand.rect_y_center_a, hand.rect_w_a, hand.rect_h_a, hand.rotation)
-        # Extracting landmark information
         hand.lm_score = res["lm_score"][hand_idx]
         hand.handedness = res["handedness"][hand_idx]
         hand.label = "right" if hand.handedness > 0.5 else "left"
         hand.norm_landmarks = np.array(res['rrn_lms'][hand_idx]).reshape(-1,3)
-        hand.landmarks = (np.array(res["sqn_lms"][hand_idx]) * self.frame_size).reshape(-1,2).astype(np.int)
+        hand.landmarks = (np.array(res["sqn_lms"][hand_idx]) * self.frame_size).reshape(-1,2).astype(int)
 
         # If we added padding to make the image square, we need to remove this padding from landmark coordinates and from rect_points
-        # Adjust landmark coordinates and rect_points if padding was added to make the image square
         if self.pad_h > 0:
             hand.landmarks[:,1] -= self.pad_h
             for i in range(len(hand.rect_points)):
@@ -695,48 +678,32 @@ class HandFaceTracker:
             for i in range(len(hand.rect_points)):
                 hand.rect_points[i][0] -= self.pad_w
 
-        # Extract world landmarks if enabled
+        # World landmarks
         if self.use_world_landmarks:
             hand.world_landmarks = np.array(res["world_lms"][hand_idx]).reshape(-1, 3)
 
-        # Recognize gestures if gesture recognition is enabled
         if self.use_gesture: mpu.recognize_gesture(hand)
 
         return hand
 
     def extract_face_data(self, res_lm_script, res_lm_nn):
-        """
-    Extracts face data from the inference results for landmarks (face script and face neural network).
-
-    Parameters:
-        - res_lm_script (dict): Inference results containing face-related information from the script.
-        - res_lm_nn (NeuralNetworkResult): Inference results containing face-related information from the neural network.
-
-    Returns:
-        - face (mpu.Face): Object containing extracted face data.
-    """
-        # Check if face landmark score is below the threshold, if so, return None
         if self.with_attention:
             lm_score = res_lm_nn.getLayerFp16("lm_conv_faceflag")[0] 
         else:
             lm_score = res_lm_nn.getLayerFp16("lm_score")[0]
         if lm_score < self.flm_score_thresh: return None
-        # Create an instance of the Face class from the mpu module
         face = mpu.Face()
-        # Extracting rectangular region information
         face.lm_score = lm_score
         face.rect_x_center_a = res_lm_script["rect_center_x"] * self.frame_size
         face.rect_y_center_a = res_lm_script["rect_center_y"] * self.frame_size
         face.rect_w_a = face.rect_h_a = res_lm_script["rect_size"] * self.frame_size
         face.rotation = res_lm_script["rotation"]
         face.rect_points = mpu.rotated_rect_to_points(face.rect_x_center_a, face.rect_y_center_a, face.rect_w_a, face.rect_h_a, face.rotation)
-        # Extracting landmark information from the neural network results
         sqn_xy = res_lm_nn.getLayerFp16("pp_sqn_xy")
         sqn_z = res_lm_nn.getLayerFp16("pp_sqn_z")
         rrn_xy = res_lm_nn.getLayerFp16("pp_rrn_xy")
         rrn_z = res_lm_nn.getLayerFp16("pp_rrn_z")
 
-        # If with_attention is enabled, additional processing for different facial zones and iris landmarks
         if self.with_attention:
             # rrn_xy and sqn_xy are the concatenation of 2d landmarks:
             # 468 basic landmarks
@@ -749,8 +716,7 @@ class HandFaceTracker:
             # rrn_z and sqn_z corresponds to 468 basic landmarks
             
             # face.landmarks = 3D landmarks in the original image in pixels
-            # Extract 3D landmarks in the original image in pixels
-            lm_xy = (np.array(sqn_xy).reshape(-1,2) * self.frame_size).astype(np.int)
+            lm_xy = (np.array(sqn_xy).reshape(-1,2) * self.frame_size).astype(int)
             lm_zone = {}
             lm_zone["lips"] = lm_xy[468:548]
             lm_zone["left eye"] = lm_xy[548:619]
@@ -767,10 +733,9 @@ class HandFaceTracker:
             left_iris_z = np.mean(lm_z[mpu.Z_REFINEMENT_IDX_MAP['left iris']])
             right_iris_z = np.mean(lm_z[mpu.Z_REFINEMENT_IDX_MAP['right iris']])
             lm_z = np.hstack((lm_z, np.repeat([left_iris_z], 5), np.repeat([right_iris_z], 5))).reshape(-1, 1)
-            face.landmarks = np.hstack((lm_xy, lm_z)).astype(np.int)
+            face.landmarks = np.hstack((lm_xy, lm_z)).astype(int)
 
             # face.norm_landmarks = 3D landmarks inside the rotated rectangle, values in [0..1]
-            # Extract 3D normalized landmarks inside the rotated rectangle, values in [0..1]
             nlm_xy = np.array(rrn_xy).reshape(-1,2)
             nlm_zone = {}
             nlm_zone["lips"] = nlm_xy[468:548]
@@ -791,14 +756,12 @@ class HandFaceTracker:
             face.norm_landmarks = np.hstack((nlm_xy, nlm_z))
 
         else:
-            # If with_attention is not enabled, extract 3D normalized landmarks and landmarks in pixels
             face.norm_landmarks = np.hstack((np.array(rrn_xy).reshape(-1,2), np.array(rrn_z).reshape(-1,1)))
             lm_xy = (np.array(sqn_xy) * self.frame_size).reshape(-1,2)
             lm_z = (np.array(sqn_z) * self.frame_size).reshape(-1, 1)
-            face.landmarks = np.hstack((lm_xy, lm_z)).astype(np.int)
+            face.landmarks = np.hstack((lm_xy, lm_z)).astype(int)
 
         # If we added padding to make the image square, we need to remove this padding from landmark coordinates and from rect_points
-        # Adjust landmark coordinates and rect_points if padding was applied to make the image square
         if self.pad_h > 0:
             face.landmarks[:,1] -= self.pad_h
             for i in range(len(face.rect_points)):
@@ -808,7 +771,6 @@ class HandFaceTracker:
             for i in range(len(face.rect_points)):
                 face.rect_points[i][0] -= self.pad_w
 
-        # If face pose estimation is enabled, calculate metric landmarks and pose vectors
         if self.use_face_pose:
             screen_landmarks = (face.landmarks / np.array([self.img_w, self.img_h, self.img_w])).T
             face.metric_landmarks, face.pose_transform_mat = get_metric_landmarks(screen_landmarks, self.pcf)
@@ -817,19 +779,14 @@ class HandFaceTracker:
             face.pose_rotation_vector, _ = cv2.Rodrigues(face.pose_transform_mat[:3, :3])
             face.pose_translation_vector = face.pose_transform_mat[:3, 3, None]
         return face
+    
+    def calculate_distance(self, hand, face):
+        hand_center = np.array([hand.rect_x_center_a, hand.rect_y_center_a])
+        face_center = np.array([face.rect_x_center_a, face.rect_y_center_a])
+        return np.linalg.norm(hand_center - face_center)
 
     def next_frame(self):
-        """
-    Processes the next frame from the video source.
-
-    Returns:
-        - video_frame (np.ndarray): Processed video frame.
-        - faces (list): List of Face objects representing detected faces.
-        - hands (list): List of HandRegion objects representing detected hands.
-    """
-        # Handling special case in double face mode with non-RGB input
         if self.double_face and self.input_type != "rgb" and self.seq_num == 0:
-            # If double face mode, non-RGB input, and first iteration, send two frames to ensure parallel inferences
             # Because there are 2 inferences running in parallel in double face mode, we need to send 2 frames on the first loop iteration
             if self.input_type == "image":
                 frame = self.img.copy()
@@ -841,7 +798,6 @@ class HandFaceTracker:
             video_frame = frame[self.crop_h:self.crop_h+self.frame_size, self.crop_w:self.crop_w+self.frame_size]
             self.prev_video_frame = video_frame
            
-            # Create ImgFrame and send to face_manager
             frame = dai.ImgFrame()
             frame.setType(dai.ImgFrame.Type.BGR888p)
             h,w = video_frame.shape[:2]
@@ -850,10 +806,8 @@ class HandFaceTracker:
             frame.setData(video_frame.transpose(2,0,1).flatten())
             self.q_face_manager_in.send(frame)
 
-        # Increment sequence number and update FPS
         self.seq_num += 1
         self.fps.update()
-        # Handling RGB input or sending current frame to face_manager
         if self.input_type == "rgb":
             in_video = self.q_video.get()
             video_frame = in_video.getCvFrame()  
@@ -867,7 +821,6 @@ class HandFaceTracker:
             # Cropping and/or padding of the video frame
             video_frame = frame[self.crop_h:self.crop_h+self.frame_size, self.crop_w:self.crop_w+self.frame_size]
            
-            # Create ImgFrame and send to face_manager
             frame = dai.ImgFrame()
             frame.setType(dai.ImgFrame.Type.BGR888p)
             h,w = video_frame.shape[:2]
@@ -876,9 +829,8 @@ class HandFaceTracker:
             frame.setData(video_frame.transpose(2,0,1).flatten())
             self.q_face_manager_in.send(frame)
 
-        # For debugging : # Create ImgFrame and send to face_manager
+        # For debugging
         if self.trace & 4:
-            # Create ImgFrame and send to face_manager
             if self.nb_hands > 0:
                 pre_pd_manip = self.q_pre_pd_manip_out.tryGet()
                 if pre_pd_manip:
@@ -905,11 +857,9 @@ class HandFaceTracker:
                 hand = self.extract_hand_data(res, i)
                 hands.append(hand)
 
-        # Get face information from face_manager output
         res_lm_script = marshal.loads(self.q_face_manager_out.get().getData())
         status = res_lm_script["status"]
         faces = []
-        # Handle different statuses
         # status = 0 means the face detector has run but detected no face
         # status = 1 means face_manager_script has initiated an face landmark inference,
         #            and the face landmark NN will send directly the result here, on the host
@@ -918,50 +868,35 @@ class HandFaceTracker:
             face = self.extract_face_data(res_lm_script, res_lm_nn)
             if face is not None: faces.append(face)
 
-        # Handle depth information if xyz is enabled
+        # Calculate and print distance between each hand and face
+        for hand in hands:
+            for face in faces:
+                distance = self.calculate_distance(hand, face)
+                print(f"Distance between hand and face: {distance}")
+
         if self.xyz:
             t = now()
             in_depth_msgs = self.q_depth_out.getAll()
             self.depth_sync.add(in_depth_msgs)
             synced_depth_msg = self.depth_sync.get(in_video) 
             frame_depth = synced_depth_msg.getFrame()
-
-            # Extract 3D coordinates for hands and faces
-        if self.nb_hands > 0:
-            for hand in hands:
-                hand.xyz, hand.xyz_zone = self.spatial_calc.get_xyz(frame_depth, hand.landmarks[0])
-                # Check distance between mouth and hand landmarks
-                distance_threshold = 50  # Set your desired threshold
-                distance_mouth_hand = dist.euclidean(face.landmarks[9, :2], hand.landmarks[0, :2])
-                if distance_mouth_hand > distance_threshold:
-                    print("Distance Threshold Exceeded! Displaying Message...")
-                    # You can display a message or take other actions here
-                    
-        for face in faces:
-            face.xyz, face.xyz_zone = self.spatial_calc.get_xyz(frame_depth, face.landmarks[9, :2])
-
             # !!! The 4 lines below are for disparity (not depth)
             # frame_depth = (frame_depth * 255. / self.max_disparity).astype(np.uint8)
             # frame_depth = cv2.applyColorMap(frame_depth, cv2.COLORMAP_HOT)
             # frame_depth = np.ascontiguousarray(frame_depth)
             # cv2.imshow("depth", frame_depth)
-            # Extract 3D coordinates for hands and faces
             if self.nb_hands > 0:
                 for hand in hands:
                     hand.xyz, hand.xyz_zone = self.spatial_calc.get_xyz(frame_depth, hand.landmarks[0])
             for face in faces:
                 face.xyz, face.xyz_zone = self.spatial_calc.get_xyz(frame_depth, face.landmarks[9,:2])
 
-        # Handle double face mode with non-RGB input
         if self.double_face and self.input_type != "rgb":
             video_frame, self.prev_video_frame = self.prev_video_frame, video_frame
+            
         return video_frame, faces, hands
 
 
     def exit(self):
-        """
-        Closes the device and prints the average frames per second.
-        """
         self.device.close()
         print(f"FPS : {self.fps.get_global():.1f} f/s")
-            
