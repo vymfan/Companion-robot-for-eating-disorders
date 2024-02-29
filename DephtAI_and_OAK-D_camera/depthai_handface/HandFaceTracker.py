@@ -26,7 +26,7 @@ with open('distances.csv', 'w', newline='') as file:
     writer = csv.writer(file)
 
     # Write the header row
-    writer.writerow(["Frame", "Average Distance between centers of 40 frames (each time)", "Average Distance between bottom face and hand of 40 frames (each time)", "Average Distance between top face and hand of 40 frames (each time)", "Average Distance between lef face and hand of 40 frames (each time)", "Average Distance between right face and hand of 40 frames (each time)"])
+    writer.writerow(["Frame", "Average Distance between centers of 30 frames (each time)", "Average Distance between bottom face and hand of 30 frames (each time)", "Average Distance between top face and hand of 30 frames (each time)", "Average Distance between lef face and hand of 30 frames (each time)", "Average Distance between right face and hand of 30 frames (each time)", "Eating ?"])
 
 
 # Get the directory of the current script file
@@ -927,15 +927,22 @@ class HandFaceTracker:
                     self.frame_count += 1
                     #print(f"Calculated distance {distance} for frame {self.frame_count}")  # Debug print
                 
-                    if self.frame_count == 40:
+                    if self.frame_count == 30:
                         avg_center_distance = sum(center_distances) / len(center_distances)
                         avg_bottom_distance = sum(bottom_distances) / len(bottom_distances)
                         avg_top_distance = sum(top_distances) / len(top_distances)
                         avg_left_distance = sum(left_distances) / len(left_distances)
                         avg_right_distance = sum(right_distances) / len(right_distances)
-                        #print(f"Average distance for last 40 frames: {avg_distance}")
+                        #print(f"Average distance for last 30 frames: {avg_distance}")
+
+                        # Check if the average distances meet the condition
+                        if 100 <= avg_bottom_distance <= 160 and avg_center_distance > 100:
+                            event = "The person is eating"
+                        else:
+                            event = "The person is not eating"
+
                         # Write the average distances to the CSV file
-                        writer.writerow([self.seq_num, avg_center_distance, avg_bottom_distance, avg_top_distance, avg_left_distance, avg_right_distance])
+                        writer.writerow([self.seq_num, avg_center_distance, avg_bottom_distance, avg_top_distance, avg_left_distance, avg_right_distance, event])
                         center_distances = []  # Reinitialize the distance lists
                         bottom_distances = []
                         top_distances = []
