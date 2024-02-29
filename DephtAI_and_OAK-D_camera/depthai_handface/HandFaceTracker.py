@@ -19,6 +19,15 @@ from face_geometry import (
                 canonical_metric_landmarks
             )
 
+import csv
+
+# Create a new CSV file and a writer object
+with open('distances.csv', 'w', newline='') as file:
+    writer = csv.writer(file)
+
+    # Write the header row
+    writer.writerow(["Frame", "Average Distance"])
+
 
 # Get the directory of the current script file
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -44,8 +53,6 @@ FACE_LANDMARK_WITH_ATTENTION_MODEL = str(SCRIPT_DIR / "models/face_landmark_with
 
 # Define the file path for the face template manager script
 FACE_TEMPLATE_MANAGER_SCRIPT = str(SCRIPT_DIR / "face_template_manager_script.py")
-
-
 
 # The DepthSync class
 class DepthSync:
@@ -175,6 +182,8 @@ class HandFaceTracker:
         print(f"Face landmark blob      : {self.flm_model}")
 
         self.nb_hands = nb_hands # Number of hands to track
+
+        self.frame_count = 0  # Initialize frame_count here to be able to use it in the process method
         
         self.xyz = False
         self.crop = crop  # Application of square cropping on source images
@@ -856,6 +865,7 @@ class HandFaceTracker:
             for i in range(len(res.get("lm_score",[]))):
                 hand = self.extract_hand_data(res, i)
                 hands.append(hand)
+        #print(f"Detected {len(hands)} hands")  # Debug print
 
         res_lm_script = marshal.loads(self.q_face_manager_out.get().getData())
         status = res_lm_script["status"]
@@ -867,12 +877,39 @@ class HandFaceTracker:
             res_lm_nn = self.q_flm_nn_out.get()
             face = self.extract_face_data(res_lm_script, res_lm_nn)
             if face is not None: faces.append(face)
+        #print(f"Detected {len(faces)} faces")  # Debug print
 
-        # Calculate and print distance between each hand and face
+        distances = []
+        frame_count = 0
+
+        # Open the CSV file in append mode before the loop
+        # with open('distances.csv', 'a', newline='') as file:
+        #     writer = csv.writer(file)
+            # Calculate and print distance between each hand and face
         for hand in hands:
             for face in faces:
                 distance = self.calculate_distance(hand, face)
-                print(f"Distance between hand and face: {distance}")
+                distances.append(distance)
+                self.frame_count += 1
+                print(f"Calculated distance {distance} for frame {self.frame_count}")  # Debug print
+                
+                if self.frame_count == 40:
+                    avg_distance = sum(distances) / len(distances)
+                    print(f"Average distance for last 40 frames: {avg_distance}")
+                        # # Write the average distance to the CSV file
+                        # writer.writerow([self.seq_num, avg_distance])
+                    distances = []  # Reinitialize the distance list
+                    self.frame_count = 0  # Reinitialize the frame count
+                    
+        # # After the loop, you can open the file in read mode to check its content
+        # with open('distances.csv', 'r') as file:
+        #     # Create a CSV reader
+        #     reader = csv.reader(file)
+        #     # Loop over each row in the CSV
+        #     for row in reader:
+        #         # Each row is a list of strings
+        #         # Use list indexing or unpacking to access the data you want
+        #         print(row)
 
         if self.xyz:
             t = now()
