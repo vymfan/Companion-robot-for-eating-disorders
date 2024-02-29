@@ -26,7 +26,7 @@ with open('distances.csv', 'w', newline='') as file:
     writer = csv.writer(file)
 
     # Write the header row
-    writer.writerow(["Frame", "Average Distance"])
+    writer.writerow(["Frame", "Average Distance between centers of 40 frames (each time)", "Average Distance between bottom face and hand of 40 frames (each time)", "Average Distance between top face and hand of 40 frames (each time)", "Average Distance between lef face and hand of 40 frames (each time)", "Average Distance between right face and hand of 40 frames (each time)"])
 
 
 # Get the directory of the current script file
@@ -789,10 +789,32 @@ class HandFaceTracker:
             face.pose_translation_vector = face.pose_transform_mat[:3, 3, None]
         return face
     
-    def calculate_distance(self, hand, face):
+    def calculate_distances(self, hand, face):
+        # Calculate the center of the hand
         hand_center = np.array([hand.rect_x_center_a, hand.rect_y_center_a])
+        # Calculate the center of the face
         face_center = np.array([face.rect_x_center_a, face.rect_y_center_a])
-        return np.linalg.norm(hand_center - face_center)
+        # Calculate the bottom of the face
+        face_bottom = np.array([face.rect_x_center_a, face.rect_y_center_a + face.rect_h_a / 2])
+        # Calculate the top of the face
+        face_top = np.array([face.rect_x_center_a, face.rect_y_center_a - face.rect_h_a / 2])
+        # Calculate the left of the face
+        face_left = np.array([face.rect_x_center_a - face.rect_w_a / 2, face.rect_y_center_a])
+        # Calculate the right of the face
+        face_right = np.array([face.rect_x_center_a + face.rect_w_a / 2, face.rect_y_center_a])
+
+        # Calculate the distance between the center of the hand and the center of the face
+        center_distance = np.linalg.norm(hand_center - face_center)
+        # Calculate the distance between the center of the hand and the bottom of the face
+        bottom_distance = np.linalg.norm(hand_center - face_bottom)
+        # Calculate the distance between the center of the hand and the top of the face
+        top_distance = np.linalg.norm(hand_center - face_top)
+        # Calculate the distance between the center of the hand and the left of the face
+        left_distance = np.linalg.norm(hand_center - face_left)
+        # Calculate the distance between the center of the hand and the right of the face
+        right_distance = np.linalg.norm(hand_center - face_right)
+
+        return center_distance, bottom_distance, top_distance, left_distance, right_distance
 
     def next_frame(self):
         if self.double_face and self.input_type != "rgb" and self.seq_num == 0:
@@ -879,37 +901,69 @@ class HandFaceTracker:
             if face is not None: faces.append(face)
         #print(f"Detected {len(faces)} faces")  # Debug print
 
-        distances = []
-        frame_count = 0
+        #frame_count = 0
 
-        # Open the CSV file in append mode before the loop
-        # with open('distances.csv', 'a', newline='') as file:
-        #     writer = csv.writer(file)
-            # Calculate and print distance between each hand and face
-        for hand in hands:
-            for face in faces:
-                distance = self.calculate_distance(hand, face)
-                distances.append(distance)
-                self.frame_count += 1
-                print(f"Calculated distance {distance} for frame {self.frame_count}")  # Debug print
+        # Initialize a counter for the number of lines written
+        lines_written = 0
+        
+        #Open the CSV file in append mode before the loop
+        with open('distances.csv', 'a', newline='') as file:
+            writer = csv.writer(file)
+            # Initialize lists to store distances
+            center_distances = []
+            bottom_distances = []
+            top_distances = []
+            left_distances = []
+            right_distances = []
+            #Calculate and print distance between each hand and face
+            for hand in hands:
+                for face in faces:
+                    center_distance, bottom_distance, top_distance, left_distance, right_distance = self.calculate_distances(hand, face)
+                    center_distances.append(center_distance)
+                    bottom_distances.append(bottom_distance)
+                    top_distances.append(top_distance)
+                    left_distances.append(left_distance)
+                    right_distances.append(right_distance)
+                    self.frame_count += 1
+                    #print(f"Calculated distance {distance} for frame {self.frame_count}")  # Debug print
                 
-                if self.frame_count == 40:
-                    avg_distance = sum(distances) / len(distances)
-                    print(f"Average distance for last 40 frames: {avg_distance}")
-                        # # Write the average distance to the CSV file
-                        # writer.writerow([self.seq_num, avg_distance])
-                    distances = []  # Reinitialize the distance list
-                    self.frame_count = 0  # Reinitialize the frame count
+                    if self.frame_count == 40:
+                        avg_center_distance = sum(center_distances) / len(center_distances)
+                        avg_bottom_distance = sum(bottom_distances) / len(bottom_distances)
+                        avg_top_distance = sum(top_distances) / len(top_distances)
+                        avg_left_distance = sum(left_distances) / len(left_distances)
+                        avg_right_distance = sum(right_distances) / len(right_distances)
+                        #print(f"Average distance for last 40 frames: {avg_distance}")
+                        # Write the average distances to the CSV file
+                        writer.writerow([self.seq_num, avg_center_distance, avg_bottom_distance, avg_top_distance, avg_left_distance, avg_right_distance])
+                        center_distances = []  # Reinitialize the distance lists
+                        bottom_distances = []
+                        top_distances = []
+                        left_distances = []
+                        right_distances = []
+                        self.frame_count = 0  # Reinitialize the frame count
+
+                        # Increment the number of lines written
+                        lines_written += 1
+
+                        # If 100 lines have been written, open the file in read mode and print each line
+                        if lines_written == 100:
+                            with open('distances.csv', 'r') as read_file:
+                                reader = csv.reader(read_file)
+                                for row in reader:
+                                    print(row)
+                            # Reset the counter
+                            lines_written = 0
                     
-        # # After the loop, you can open the file in read mode to check its content
-        # with open('distances.csv', 'r') as file:
-        #     # Create a CSV reader
-        #     reader = csv.reader(file)
-        #     # Loop over each row in the CSV
-        #     for row in reader:
-        #         # Each row is a list of strings
-        #         # Use list indexing or unpacking to access the data you want
-        #         print(row)
+        # After the loop, you can open the file in read mode to check its content
+        with open('distances.csv', 'r') as file:
+            # Create a CSV reader
+            reader = csv.reader(file)
+            # Loop over each row in the CSV
+            for row in reader:
+                # Each row is a list of strings
+                # Use list indexing or unpacking to access the data you want
+                print(row)
 
         if self.xyz:
             t = now()
