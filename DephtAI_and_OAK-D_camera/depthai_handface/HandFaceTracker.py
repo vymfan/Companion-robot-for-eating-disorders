@@ -20,9 +20,14 @@ from face_geometry import (
             )
 
 import csv
+import datetime
 
+# Get the date and hour
+now = datetime.datetime.now()
+# Formate the date and hour in a chain
+filename = now.strftime("%Y-%m-%d_%H-%M-%S") + ".csv"
 # Create a new CSV file and a writer object
-with open('distances.csv', 'w', newline='') as file:
+with open(filename, 'w', newline='') as file:
     writer = csv.writer(file)
 
     # Write the header row
@@ -907,7 +912,7 @@ class HandFaceTracker:
         lines_written = 0
         
         #Open the CSV file in append mode before the loop
-        with open('distances.csv', 'a', newline='') as file:
+        with open(filename, 'a', newline='') as file:
             writer = csv.writer(file)
             # Initialize lists to store distances
             center_distances = []
@@ -953,9 +958,9 @@ class HandFaceTracker:
                         # Increment the number of lines written
                         lines_written += 1
 
-                        # If 100 lines have been written, open the file in read mode and print each line
-                        if lines_written == 100:
-                            with open('distances.csv', 'r') as read_file:
+                        # If 40 lines have been written, open the file in read mode and print each line
+                        if lines_written == 40:
+                            with open(filename, 'r') as read_file:
                                 reader = csv.reader(read_file)
                                 for row in reader:
                                     print(row)
